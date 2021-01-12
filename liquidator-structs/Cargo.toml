@@ -1,0 +1,10 @@
+[package]
+name = "hifi-liquidator-structs"
+version = "1.0.0"
+authors = ["Paul Razvan Berg <hello@paulrberg.com>"]
+edition = "2018"
+
+[dependencies]
+ethers = { git = "https://github.com/gakonst/ethers-rs" }
+gumdrop = "0.8"
+serde = "1.0"

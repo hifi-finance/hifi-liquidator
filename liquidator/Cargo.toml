@@ -1,0 +1,5 @@
+[package]
+name = "hifi-liquidator"
+version = "1.0.0"
+authors = ["Paul Razvan Berg <hello@paulrberg.com>"]
+edition = "2018"

@@ -1,0 +1,6 @@
+[workspace]
+
+members = [
+    "liquidator",
+    "liquidator-structs"
+]
