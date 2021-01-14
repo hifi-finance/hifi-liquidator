@@ -1,2 +1,5 @@
+ignore = [
+    "liquidator-bindings/src/**/*.rs"
+]
 max_width = 120
 tab_spaces = 4
