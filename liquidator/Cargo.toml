@@ -6,7 +6,7 @@ edition = "2018"
 
 [dependencies]
 anyhow = "1.0"
-ethers = { git = "https://github.com/gakonst/ethers-rs", rev = "fc4b3e4ce49f67a9d0f8155902a4e750411e1174" }
+ethers = { git = "https://github.com/gakonst/ethers-rs", tag = "0.2.0" }
 gumdrop = "0.8"
 hifi-liquidator-bindings = { path = "../liquidator-bindings", version = "1.0" }
 hifi-liquidator-structs = { path = "../liquidator-structs", version = "1.0" }
