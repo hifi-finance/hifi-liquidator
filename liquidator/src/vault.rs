@@ -2,13 +2,13 @@
 //!
 //! This module is responsible for keeping track of the Hifi users that have open
 //! positions and monitoring their debt healthiness.
-use crate::HifiResult;
+use crate::HifiLiquidatorResult;
 
 use ethers::prelude::*;
 use hifi_liquidator_bindings::BalanceSheet;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
-use tracing::{debug, debug_span};
+use tracing::debug_span;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 /// A borrower's vault
@@ -25,19 +25,19 @@ pub struct Vault {
 }
 
 #[derive(Clone)]
-pub struct VaultCollector<M> {
+pub struct VaultContainer<M> {
     /// The BalanceSheet smart contract
     pub balance_sheet: BalanceSheet<M>,
 
     /// We use Multicall to batch together calls and have reduced stress on our RPC endpoint.
     multicall: Multicall<M>,
 
-    /// Mapping of the accounts that have taken loans and might be liquidatable. The first address
+    /// Mapping of the Hifi accounts that have taken loans and might be liquidatable. The first address
     /// is the FyToken, the second the borrower's account.
     pub vaults: HashMap<Address, HashMap<Address, Vault>>,
 }
 
-impl<M: Middleware> VaultCollector<M> {
+impl<M: Middleware> VaultContainer<M> {
     /// Constructor
     pub async fn new(
         balance_sheet: Address,
@@ -48,7 +48,7 @@ impl<M: Middleware> VaultCollector<M> {
         let multicall = Multicall::new(client.clone(), multicall)
             .await
             .expect("Could not initialize Multicall");
-        VaultCollector {
+        VaultContainer {
             balance_sheet: BalanceSheet::new(balance_sheet, client),
             multicall,
             vaults,
@@ -57,7 +57,7 @@ impl<M: Middleware> VaultCollector<M> {
 
     /// Indexes any new vaults which may have been opened since we last made this call. Then, it proceeds
     /// to get the latest account details for each user.
-    pub async fn update_vaults(&mut self, from_block: U64, to_block: U64) -> HifiResult<(), M> {
+    pub async fn update_vaults(&mut self, from_block: U64, to_block: U64) -> HifiLiquidatorResult<(), M> {
         let span = debug_span!("monitoring");
         let _enter = span.enter();
 
@@ -76,26 +76,13 @@ impl<M: Middleware> VaultCollector<M> {
         for vault_tuple in new_vaults {
             let vault = self.get_vault(vault_tuple.0, vault_tuple.1).await?;
 
-            if let Some(borrower_to_vault_mapping) = self.vaults.get_mut(&vault_tuple.0) {
-                if borrower_to_vault_mapping.insert(vault_tuple.1, vault.clone()).is_none() {
-                    debug!(
-                        new_vault = ?vault,
-                        debt = %vault.debt,
-                        is_underwater = %vault.is_underwater,
-                        locked_collateral = %vault.locked_collateral
-                    );
-                }
+            // Either initialize the inner HashMap or insert the transaction in the existing one.
+            if let Some(inner_hash_map) = self.vaults.get_mut(&vault_tuple.0) {
+                inner_hash_map.insert(vault_tuple.1, vault.clone());
             } else {
-                let mut borrower_to_vault_mapping = HashMap::<Address, Vault>::new();
-                borrower_to_vault_mapping.insert(vault_tuple.1, vault.clone());
-                if self.vaults.insert(vault_tuple.0, borrower_to_vault_mapping).is_none() {
-                    debug!(
-                        new_vault = ?vault,
-                        debt = %vault.debt,
-                        is_underwater = %vault.is_underwater,
-                        locked_collateral = %vault.locked_collateral
-                    );
-                }
+                let mut inner_hash_map = HashMap::<Address, Vault>::new();
+                inner_hash_map.insert(vault_tuple.1, vault.clone());
+                self.vaults.insert(vault_tuple.0, inner_hash_map);
             }
         }
 
@@ -106,7 +93,7 @@ impl<M: Middleware> VaultCollector<M> {
     /// 1. getVaultDebt
     /// 2. isAccountUnderwater
     /// 3. getVaultLockedCollateral
-    pub async fn get_vault(&mut self, fy_token: Address, borrower: Address) -> HifiResult<Vault, M> {
+    pub async fn get_vault(&mut self, fy_token: Address, borrower: Address) -> HifiLiquidatorResult<Vault, M> {
         let debt = self.balance_sheet.get_vault_debt(fy_token, borrower);
         let is_underwater = self.balance_sheet.is_account_underwater(fy_token, borrower);
         let locked_collateral = self.balance_sheet.get_vault_locked_collateral(fy_token, borrower);
