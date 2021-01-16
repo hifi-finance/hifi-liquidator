@@ -38,9 +38,11 @@ pub struct Sentinel<M> {
 impl<M: Middleware> Sentinel<M> {
     /// Instantiates the sentinel and the inner liquidator.
     /// `state` should be passed if there is previous data that should be taken into account from a previous run.
+    #[allow(clippy::clippy::too_many_arguments)]
     pub async fn new(
         balance_sheet: Address,
         client: Arc<M>,
+        fy_tokens: Vec<Address>,
         hifi_flash_swap: Address,
         multicall: Option<Address>,
         min_profit: U256,
@@ -65,7 +67,7 @@ impl<M: Middleware> Sentinel<M> {
             uniswap_v2_pair,
         );
 
-        let vault_container = VaultContainer::new(balance_sheet, client.clone(), multicall, vaults).await;
+        let vault_container = VaultContainer::new(balance_sheet, client.clone(), fy_tokens, multicall, vaults).await;
 
         Ok(Self {
             client,
@@ -144,8 +146,8 @@ impl<M: Middleware> Sentinel<M> {
             self.last_block = block_number;
 
             // Log once every 10 blocks.
-            if let Some(file) = log_file.take() {
-                self.log_state(file);
+            if let Some(log_file) = log_file.take() {
+                self.log_state(log_file);
             }
         }
 
@@ -155,9 +157,9 @@ impl<M: Middleware> Sentinel<M> {
 
 /// Public methods for the Sentinel struct.
 impl<M: Middleware> Sentinel<M> {
-    fn log_state<W: Write>(&self, w: W) {
+    fn log_state<W: Write>(&self, writable_file: W) {
         serde_json::to_writer(
-            w,
+            writable_file,
             &State {
                 last_block: self.last_block,
                 vaults: self.vault_container.vaults.clone(),

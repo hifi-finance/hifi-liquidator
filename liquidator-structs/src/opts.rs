@@ -10,8 +10,8 @@ pub struct Opts {
     #[options(help = "Path to json file with the contract addresses")]
     pub config: PathBuf,
 
-    #[options(help = "File to be used for persistence", default = "data.json")]
-    pub file: PathBuf,
+    #[options(help = "Database file to be used for persistence", default = "data.json")]
+    pub db_file: PathBuf,
 
     #[options(help = "Polling interval in milliseconds", default = "1000")]
     pub interval: u64,

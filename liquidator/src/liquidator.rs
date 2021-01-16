@@ -26,6 +26,7 @@ pub struct Liquidator<M> {
 /// Public methods for the Liquidator struct.
 impl<M: Middleware> Liquidator<M> {
     /// Constructor
+    #[allow(clippy::redundant_clone)]
     pub fn new(
         client: Arc<M>,
         gas_escalator: GeometricGasPrice,
@@ -75,7 +76,7 @@ impl<M: Middleware> Liquidator<M> {
                     pending_tx = ?pending_tx,
                     fy_token = ?fy_token,
                     borrower = ?borrower,
-                    "Liquidation tx not confirmed yet."
+                    "Liquidation tx not confirmed yet"
                 );
                 continue;
             }
@@ -90,7 +91,7 @@ impl<M: Middleware> Liquidator<M> {
                 fy_token = ?fy_token,
                 borrower = ?borrower,
                 debt = %vault.debt,
-                "Found under-collateralized borrower. Triggering liquidation.",
+                "Found under-collateralized borrower, triggering liquidation",
             );
 
             // Craft the HifiFlashSwap contract's arguments.
@@ -109,13 +110,10 @@ impl<M: Middleware> Liquidator<M> {
             let pending_tx = contract_call.send().await?;
             let pending_tx_request: TransactionRequest = contract_call.tx.clone();
             let pending_tx_hash: TxHash = *pending_tx;
+
+            // Save the pending tx data into the local state.
             self.insert_pending_tx_in_hash_map(fy_token, borrower, (pending_tx_request, pending_tx_hash, now));
-            trace!(
-                pending_tx = ?pending_tx,
-                fy_token = ?fy_token,
-                borrower = ?borrower,
-                "Submitted liquidation."
-            );
+            trace!(pending_tx = ?pending_tx, fy_token = ?fy_token, borrower = ?borrower, "Submitted liquidation");
         }
 
         Ok(())
@@ -154,7 +152,7 @@ impl<M: Middleware> Liquidator<M> {
         let borrower_to_pending_tx_hash_map = self
             .pending_txs
             .get_mut(fy_token)
-            .expect("Inner hash map must exist when receipt was found on pending transaction");
+            .expect("Inner hash map must exist when receipt was found on pending transaction.");
         borrower_to_pending_tx_hash_map.remove(borrower);
         if borrower_to_pending_tx_hash_map.is_empty() {
             self.pending_txs.remove(fy_token);
@@ -198,7 +196,7 @@ impl<M: Middleware> Liquidator<M> {
         } else {
             // Get the new gas price based on how much time passed since the tx was last broadcast.
             let new_gas_price = self.gas_escalator.get_gas_price(
-                pending_tx.0.gas_price.expect("Gas price must be set"),
+                pending_tx.0.gas_price.expect("Gas price must be set."),
                 now.duration_since(pending_tx.2).as_secs(),
             );
 

@@ -1,14 +1,14 @@
-//! Borrowers
+//! Vault
 //!
 //! This module is responsible for keeping track of the Hifi users that have open
 //! positions and monitoring their debt healthiness.
 use crate::EthersResult;
 
 use ethers::prelude::*;
-use hifi_liquidator_bindings::{BalanceSheet, FyToken};
+use hifi_liquidator_bindings::{BalanceSheet, FyToken, OpenVaultFilter};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
-use tracing::debug_span;
+use tracing::{debug, debug_span};
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 /// A borrower's vault
@@ -31,6 +31,9 @@ pub struct VaultContainer<M> {
     /// The BalanceSheet smart contract
     pub balance_sheet: BalanceSheet<M>,
 
+    /// The fyTokens to monitor.
+    pub fy_tokens: Vec<Address>,
+
     /// We use Multicall to batch together calls and have reduced stress on our RPC endpoint.
     multicall: Multicall<M>,
 
@@ -44,6 +47,7 @@ impl<M: Middleware> VaultContainer<M> {
     pub async fn new(
         balance_sheet: Address,
         client: Arc<M>,
+        fy_tokens: Vec<Address>,
         multicall: Option<Address>,
         vaults: HashMap<Address, HashMap<Address, Vault>>,
     ) -> Self {
@@ -52,6 +56,7 @@ impl<M: Middleware> VaultContainer<M> {
             .expect("Could not initialize Multicall");
         VaultContainer {
             balance_sheet: BalanceSheet::new(balance_sheet, client),
+            fy_tokens,
             multicall,
             vaults,
         }
@@ -95,11 +100,9 @@ impl<M: Middleware> VaultContainer<M> {
         let (debt, is_account_underwater, locked_collateral, underlying_precision_scalar): (U256, bool, U256, U256) =
             multicall.call().await?;
 
-        // Scale the debt down by the underlying precision scalar. For example, USDC has 6 decimals, so the debt is
-        // scaled from 1e20 (100 fYUSDC) to 1e8 (100 USDC).
-        println!("pre_debt: {}", debt);
+        // Scale the debt down by the underlying precision scalar. E.g. USDC has 6 decimals, so the debt is scaled
+        // from 1e20 (100 fYUSDC) to 1e8 (100 USDC).
         let debt = debt / underlying_precision_scalar;
-        println!("post_debt: {}", debt);
 
         Ok(Vault {
             debt,
@@ -111,33 +114,58 @@ impl<M: Middleware> VaultContainer<M> {
     /// Indexes any new vaults which may have been opened since we last made this call. Then, it proceeds
     /// to get the latest account details for each user.
     pub async fn update_vaults(&mut self, client: Arc<M>, from_block: U64, to_block: U64) -> EthersResult<(), M> {
-        let span = debug_span!("monitoring");
+        let span = debug_span!("Monitoring");
         let _enter = span.enter();
 
-        let new_vault_tuples: Vec<(Address, Address)> = self
+        let new_vault_tuples: Vec<OpenVaultFilter> = self
             .balance_sheet
             .open_vault_filter()
             .from_block(from_block)
             .to_block(to_block)
             .query()
-            .await?
+            .await?;
+
+        // Skip the vaults that don't belong to the fyTokens in the config.
+        let new_vault_tuples = new_vault_tuples
             .into_iter()
-            .map(|event_log| (event_log.fy_token, event_log.borrower))
+            .filter_map(|event_log| {
+                if self.fy_tokens.contains(&event_log.fy_token) {
+                    Some((event_log.fy_token, event_log.borrower))
+                } else {
+                    None
+                }
+            })
             .collect::<Vec<_>>();
 
-        for vault_tuple in new_vault_tuples.iter() {
-            let vault = self.get_vault(client.clone(), vault_tuple.0, vault_tuple.1).await?;
-
-            // Either initialize the inner HashMap or insert the transaction in the existing one.
-            if let Some(borrower_to_vault_hash_map) = self.vaults.get_mut(&vault_tuple.0) {
-                borrower_to_vault_hash_map.insert(vault_tuple.1, vault.clone());
-            } else {
-                let mut borrower_to_vault_hash_map = HashMap::<Address, Vault>::new();
-                borrower_to_vault_hash_map.insert(vault_tuple.1, vault.clone());
-                self.vaults.insert(vault_tuple.0, borrower_to_vault_hash_map);
-            }
+        for new_vault_tuple in new_vault_tuples.iter() {
+            let fy_token = new_vault_tuple.0;
+            let borrower = new_vault_tuple.1;
+            let vault = self.get_vault(client.clone(), fy_token, borrower).await?;
+            self.insert_vault_in_hash_map(&fy_token, &borrower, vault);
         }
 
         Ok(())
+    }
+}
+
+/// Private methods for the VaultContainer struct
+impl<M: Middleware> VaultContainer<M> {
+    /// Initialize the borrower-to-vault hash map it it doesn't exist and insert the vault.
+    fn insert_vault_in_hash_map(&mut self, fy_token: &Address, borrower: &Address, vault: Vault) {
+        if let Some(borrower_to_vault_hash_map) = self.vaults.get_mut(fy_token) {
+            // If the Option enum variant returned by "insert" is None, it means we found a new borrower.
+            if borrower_to_vault_hash_map.insert(*borrower, vault.clone()).is_none() {
+                debug!(new_borrower = ?borrower, in_fy_token = ?fy_token, debt = %vault.debt, locked_collateral = %vault.locked_collateral);
+            } else {
+                debug!(update_borrower = ?borrower,in_fy_token = ?fy_token, debt = %vault.debt, locked_collateral = %vault.locked_collateral);
+            }
+        } else {
+            let mut borrower_to_vault_hash_map = HashMap::<Address, Vault>::new();
+            borrower_to_vault_hash_map.insert(*borrower, vault.clone());
+            self.vaults.insert(*fy_token, borrower_to_vault_hash_map);
+
+            debug!(new_fy_token = ?fy_token);
+            debug!(new_borrower = ?borrower, in_fy_token = ?fy_token, debt = %vault.debt, locked_collateral = %vault.locked_collateral);
+        }
     }
 }

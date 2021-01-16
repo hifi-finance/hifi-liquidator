@@ -3,7 +3,7 @@ use ethers::prelude::*;
 use gumdrop::Options;
 use hifi_liquidator::sentinel::Sentinel;
 use hifi_liquidator_structs::{Config, Opts};
-use std::{convert::TryFrom, sync::Arc, time::Duration};
+use std::{convert::TryFrom, fs::OpenOptions, sync::Arc, time::Duration};
 use tracing::info;
 use tracing_subscriber::{filter::EnvFilter, fmt::Subscriber};
 
@@ -28,7 +28,7 @@ async fn main() -> AnyhowResult<()> {
 }
 
 async fn run<P: JsonRpcClient + 'static>(opts: Opts, provider: Provider<P>) -> AnyhowResult<()> {
-    info!("Starting Hifi Liquidator.");
+    info!("Starting Hifi liquidator");
     let provider = provider.interval(Duration::from_millis(opts.interval));
     let wallet: LocalWallet = std::fs::read_to_string(&opts.private_key)
         .with_context(|| format!("Could not read private key: {:?}", &opts.private_key))?
@@ -38,29 +38,30 @@ async fn run<P: JsonRpcClient + 'static>(opts: Opts, provider: Provider<P>) -> A
     let signer_middleware = SignerMiddleware::new(provider, wallet);
     let nonce_manager_middleware = NonceManagerMiddleware::new(signer_middleware, address);
     let client = Arc::new(nonce_manager_middleware);
-    info!("Profits will be sent to {:?}", address);
 
+    info!("Profits will be sent to {:?}", address);
     info!("Node: {}", opts.url);
+    info!("Persistent data will be stored in: {:?}", opts.db_file);
 
     let config: Config = serde_json::from_reader(std::fs::File::open(opts.config)?)?;
     info!("BalanceSheet: {:?}", config.balance_sheet);
-    info!("Fintroller: {:?}", config.fintroller);
+    info!("FyTokens: {:?}", config.fy_tokens);
     info!("HifiFlashSwap {:?}", config.hifi_flash_swap);
     info!("Multicall: {:?}", config.multicall);
     info!("UniswapV2Pair: {:?}", config.uniswap_v2_pair);
-    info!("Persistent data will be stored at: {:?}", opts.file);
 
-    let file = std::fs::OpenOptions::new()
+    let db_file = OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
-        .open(&opts.file)
+        .open(&opts.db_file)
         .unwrap();
-    let state = serde_json::from_reader(&file).unwrap_or_default();
+    let state = serde_json::from_reader(&db_file).unwrap_or_default();
 
     let mut sentinel = Sentinel::new(
         config.balance_sheet,
         client,
+        config.fy_tokens,
         config.hifi_flash_swap,
         config.multicall,
         opts.min_profit,
@@ -69,7 +70,7 @@ async fn run<P: JsonRpcClient + 'static>(opts: Opts, provider: Provider<P>) -> A
     )
     .await?;
 
-    sentinel.run(opts.file, opts.start_block).await?;
+    sentinel.run(opts.db_file, opts.start_block).await?;
 
     Ok(())
 }

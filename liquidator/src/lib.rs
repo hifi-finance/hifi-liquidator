@@ -1,7 +1,8 @@
+use ethers::prelude::ContractError;
+use std::result::Result;
+
 pub mod liquidator;
 pub mod sentinel;
 pub mod vault;
 
-use ethers::prelude::*;
-
-pub type EthersResult<T, M> = std::result::Result<T, ContractError<M>>;
+pub type EthersResult<T, M> = Result<T, ContractError<M>>;
