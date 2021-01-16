@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use ethers::types::U256;
+use ethers::types::{U256, U64};
 use gumdrop::Options;
 
 #[derive(Debug, Options, Clone)]
@@ -23,7 +23,7 @@ pub struct Opts {
     pub private_key: PathBuf,
 
     #[options(help = "Block at which to begin monitoring")]
-    pub start_block: Option<u64>,
+    pub start_block: Option<U64>,
 
     #[options(help = "Ethereum node endpoint (HTTP or WS)", default = "http://localhost:8545")]
     pub url: String,

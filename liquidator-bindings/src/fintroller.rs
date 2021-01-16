@@ -1,4 +1,5 @@
-#[allow(clippy::all)]
+#![allow(clippy::all)]
+
 pub use fintroller_mod::*;
 #[allow(clippy::too_many_arguments)]
 mod fintroller_mod {

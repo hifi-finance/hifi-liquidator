@@ -1,4 +1,5 @@
-#[allow(clippy::all)]
+#![allow(clippy::all)]
+
 pub use uniswapv2pair_mod::*;
 #[allow(clippy::too_many_arguments)]
 mod uniswapv2pair_mod {

@@ -1,4 +1,5 @@
-#[allow(clippy::all)]
+#![allow(clippy::all)]
+
 pub use fytoken_mod::*;
 #[allow(clippy::too_many_arguments)]
 mod fytoken_mod {

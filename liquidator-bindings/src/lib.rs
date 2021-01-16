@@ -1,3 +1,5 @@
+#[rustfmt::skip]
+
 mod balancesheet;
 pub use balancesheet::*;
 

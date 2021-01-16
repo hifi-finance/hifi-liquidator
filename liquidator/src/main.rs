@@ -1,7 +1,7 @@
 use anyhow::{Context, Result as AnyhowResult};
 use ethers::prelude::*;
 use gumdrop::Options;
-use hifi_liquidator::{escalator::GeometricGasPrice, sentinel::Sentinel};
+use hifi_liquidator::sentinel::Sentinel;
 use hifi_liquidator_structs::{Config, Opts};
 use std::{convert::TryFrom, sync::Arc, time::Duration};
 use tracing::info;
@@ -58,15 +58,9 @@ async fn run<P: JsonRpcClient + 'static>(opts: Opts, provider: Provider<P>) -> A
         .unwrap();
     let state = serde_json::from_reader(&file).unwrap_or_default();
 
-    let mut gas_escalator = GeometricGasPrice::new();
-    gas_escalator.coefficient = 1.12501;
-    gas_escalator.every_secs = 5; // TODO: Make this be 90s
-    gas_escalator.max_price = Some(U256::from(5000 * 1e9 as u64)); // 5k gwei
-
     let mut sentinel = Sentinel::new(
         config.balance_sheet,
         client,
-        gas_escalator,
         config.hifi_flash_swap,
         config.multicall,
         opts.min_profit,
@@ -75,7 +69,7 @@ async fn run<P: JsonRpcClient + 'static>(opts: Opts, provider: Provider<P>) -> A
     )
     .await?;
 
-    // sentinel.run(opts.file, opts.start_block).await?;
+    sentinel.run(opts.file, opts.start_block).await?;
 
     Ok(())
 }

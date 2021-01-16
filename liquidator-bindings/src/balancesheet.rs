@@ -1,4 +1,6 @@
-#[allow(clippy::all)]
+#![allow(clippy::all)]
+#[rustfmt::skip]
+
 pub use balancesheet_mod::*;
 #[allow(clippy::too_many_arguments)]
 mod balancesheet_mod {
