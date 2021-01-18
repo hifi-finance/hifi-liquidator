@@ -11,12 +11,13 @@ use std::{collections::HashMap, sync::Arc};
 use tracing::{debug, debug_span};
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-/// A borrower's vault
+/// Borrower's vault from BalanceSheet
 pub struct Vault {
-    /// The borrower's total debt. Obtained by calling `getVaultDebt` on the BalanceSheet.
-    /// NOTE: the debt here is recorded in terms of underlying, but the Hifi protocol records
-    /// everything in terms of fyTokens.
+    /// The borrower's debt recorded in fyTokens. Obtained by calling `getVaultDebt` on the BalanceSheet.
     pub debt: U256,
+
+    /// The borrower's debt recorded in underlying. Obtained by dividing `debt` by the underlying precision scalar.
+    pub debt_in_underlying: U256,
 
     /// Is the vault liquidatable? Obtained by calling `isAccountUnderwater` on the BalanceSheet.
     pub is_account_underwater: bool,
@@ -26,8 +27,19 @@ pub struct Vault {
     pub locked_collateral: U256,
 }
 
+impl Vault {
+    pub fn new_empty() -> Self {
+        Self {
+            debt: U256::zero(),
+            debt_in_underlying: U256::zero(),
+            is_account_underwater: false,
+            locked_collateral: U256::zero(),
+        }
+    }
+}
+
 #[derive(Clone)]
-pub struct VaultContainer<M> {
+pub struct VaultsContainer<M> {
     /// The BalanceSheet smart contract
     pub balance_sheet: BalanceSheet<M>,
 
@@ -42,7 +54,7 @@ pub struct VaultContainer<M> {
     pub vaults: HashMap<Address, HashMap<Address, Vault>>,
 }
 
-impl<M: Middleware> VaultContainer<M> {
+impl<M: Middleware> VaultsContainer<M> {
     /// Constructor
     pub async fn new(
         balance_sheet: Address,
@@ -54,7 +66,7 @@ impl<M: Middleware> VaultContainer<M> {
         let multicall = Multicall::new(client.clone(), multicall)
             .await
             .expect("Could not initialize Multicall");
-        VaultContainer {
+        VaultsContainer {
             balance_sheet: BalanceSheet::new(balance_sheet, client),
             fy_tokens,
             multicall,
@@ -65,8 +77,8 @@ impl<M: Middleware> VaultContainer<M> {
     pub fn get_vaults_iterator(&self) -> impl Iterator<Item = (&Address, &Address, &Vault)> {
         let mut vaults_iterator: Vec<(&Address, &Address, &Vault)> = vec![];
 
-        for (fy_token, borrower_to_vault_hash_map) in self.vaults.iter() {
-            for (borrower, vault) in borrower_to_vault_hash_map.iter() {
+        for (fy_token, inner_hash_map) in self.vaults.iter() {
+            for (borrower, vault) in inner_hash_map.iter() {
                 vaults_iterator.push((fy_token, borrower, vault));
             }
         }
@@ -85,7 +97,7 @@ impl<M: Middleware> VaultContainer<M> {
         let is_account_underwater_call = self.balance_sheet.is_account_underwater(fy_token, borrower);
         let locked_collateral_call = self.balance_sheet.get_vault_locked_collateral(fy_token, borrower);
 
-        // TODO: cache these instances of FyToken.
+        // TODO: cache these FyToken instances.
         let fy_token = FyToken::new(fy_token, client);
         let underlying_precision_scalar_call = fy_token.underlying_precision_scalar();
 
@@ -101,11 +113,13 @@ impl<M: Middleware> VaultContainer<M> {
             multicall.call().await?;
 
         // Scale the debt down by the underlying precision scalar. E.g. USDC has 6 decimals, so the debt is scaled
-        // from 1e20 (100 fYUSDC) to 1e8 (100 USDC).
-        let debt = debt / underlying_precision_scalar;
+        // from 1e20 (100 fYUSDC) to 1e8 (100 USDC). There is a loss of precision when scaling down, but we can
+        // safely neglect it.
+        let debt_in_underlying = debt / underlying_precision_scalar;
 
         Ok(Vault {
             debt,
+            debt_in_underlying,
             is_account_underwater,
             locked_collateral,
         })
@@ -117,6 +131,7 @@ impl<M: Middleware> VaultContainer<M> {
         let span = debug_span!("Monitoring");
         let _enter = span.enter();
 
+        // 1. Get all new vaults (TODO: find a way to avoid having to do this).
         let new_vault_tuples: Vec<OpenVaultFilter> = self
             .balance_sheet
             .open_vault_filter()
@@ -125,8 +140,8 @@ impl<M: Middleware> VaultContainer<M> {
             .query()
             .await?;
 
-        // Skip the vaults that don't belong to the fyTokens in the config.
-        let new_vault_tuples = new_vault_tuples
+        // 2. Filter the vaults that don't belong to the fyTokens whitelisted the config.
+        let new_vault_tuples: Vec<(Address, Address)> = new_vault_tuples
             .into_iter()
             .filter_map(|event_log| {
                 if self.fy_tokens.contains(&event_log.fy_token) {
@@ -137,35 +152,43 @@ impl<M: Middleware> VaultContainer<M> {
             })
             .collect::<Vec<_>>();
 
+        // 3. Merge the new vaults with the existing vaults.
         for new_vault_tuple in new_vault_tuples.iter() {
             let fy_token = new_vault_tuple.0;
             let borrower = new_vault_tuple.1;
-            let vault = self.get_vault(client.clone(), fy_token, borrower).await?;
-            self.insert_vault_in_hash_map(&fy_token, &borrower, vault);
+            self.insert_vault_if_not_exists(fy_token, borrower);
+        }
+
+        // 4. Update all vaults.
+        for (fy_token, inner_hash_map) in self.vaults.clone().iter() {
+            for borrower in inner_hash_map.keys().into_iter() {
+                let vault = self.get_vault(client.clone(), *fy_token, *borrower).await?;
+                self.vaults
+                    .get_mut(fy_token)
+                    .expect("Inner hash map will always be found since we're iterating over the map")
+                    .insert(*borrower, vault);
+            }
         }
 
         Ok(())
     }
 }
 
-/// Private methods for the VaultContainer struct
-impl<M: Middleware> VaultContainer<M> {
-    /// Initialize the borrower-to-vault hash map it it doesn't exist and insert the vault.
-    fn insert_vault_in_hash_map(&mut self, fy_token: &Address, borrower: &Address, vault: Vault) {
-        if let Some(borrower_to_vault_hash_map) = self.vaults.get_mut(fy_token) {
-            // If the Option enum variant returned by "insert" is None, it means we found a new borrower.
-            if borrower_to_vault_hash_map.insert(*borrower, vault.clone()).is_none() {
-                debug!(new_borrower = ?borrower, in_fy_token = ?fy_token, debt = %vault.debt, locked_collateral = %vault.locked_collateral);
-            } else {
-                debug!(update_borrower = ?borrower,in_fy_token = ?fy_token, debt = %vault.debt, locked_collateral = %vault.locked_collateral);
+/// Private methods for the VaultsContainer struct
+impl<M: Middleware> VaultsContainer<M> {
+    /// Insert the vault in the hash map if it doesn't exist.
+    fn insert_vault_if_not_exists(&mut self, fy_token: Address, borrower: Address) {
+        if let Some(inner_hash_map) = self.vaults.get_mut(&fy_token) {
+            if inner_hash_map.get(&borrower).is_none() {
+                inner_hash_map.insert(borrower, Vault::new_empty());
+                debug!(new_borrower = %borrower, in_fy_token = %fy_token);
             }
         } else {
-            let mut borrower_to_vault_hash_map = HashMap::<Address, Vault>::new();
-            borrower_to_vault_hash_map.insert(*borrower, vault.clone());
-            self.vaults.insert(*fy_token, borrower_to_vault_hash_map);
-
-            debug!(new_fy_token = ?fy_token);
-            debug!(new_borrower = ?borrower, in_fy_token = ?fy_token, debt = %vault.debt, locked_collateral = %vault.locked_collateral);
+            let mut inner_hash_map = HashMap::<Address, Vault>::new();
+            inner_hash_map.insert(borrower, Vault::new_empty());
+            self.vaults.insert(fy_token, inner_hash_map);
+            debug!(new_fy_token = %fy_token);
+            debug!(new_borrower = %borrower, in_fy_token = %fy_token);
         }
     }
 }

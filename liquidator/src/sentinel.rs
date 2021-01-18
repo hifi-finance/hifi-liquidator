@@ -1,10 +1,9 @@
 use crate::{
-    liquidator::Liquidator,
-    vault::{Vault, VaultContainer},
+    liquidations::Liquidator,
+    vaults::{Vault, VaultsContainer},
     EthersResult,
 };
 
-use ethers::middleware::gas_escalator::GeometricGasPrice;
 use ethers::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -16,7 +15,7 @@ use std::{
 };
 use tracing::debug_span;
 
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Deserialize, Default, Serialize)]
 /// The state which is stored in our logs on disk.
 pub struct State {
     /// The last observed block.
@@ -31,49 +30,31 @@ pub struct Sentinel<M> {
     client: Arc<M>,
     last_block: U64,
     liquidator: Liquidator<M>,
-    vault_container: VaultContainer<M>,
+    vaults_container: VaultsContainer<M>,
 }
 
 /// Public methods for the Sentinel struct.
 impl<M: Middleware> Sentinel<M> {
-    /// Instantiates the sentinel and the inner liquidator.
-    /// `state` should be passed if there is previous data that should be taken into account from a previous run.
-    #[allow(clippy::clippy::too_many_arguments)]
+    /// Instantiates the sentinel and the inner liquidator and vaults container.
+    /// `state` should be provided if there is data that should be taken into account from a previous run.
     pub async fn new(
         balance_sheet: Address,
         client: Arc<M>,
         fy_tokens: Vec<Address>,
-        hifi_flash_swap: Address,
+        liquidator: Liquidator<M>,
         multicall: Option<Address>,
-        min_profit: U256,
         state: Option<State>,
-        uniswap_v2_pair: Address,
     ) -> EthersResult<Sentinel<M>, M> {
         let (last_block, vaults) = match state {
             Some(state) => (state.last_block, state.vaults),
             None => (U64::zero(), HashMap::new()),
         };
-
-        let coefficient = 1.12501;
-        let every_secs: u64 = 5; // TODO: Make this be 90s
-        let max_price = Some(U256::from(5000 * 1e9 as u64)); // 5k gwei
-        let gas_escalator = GeometricGasPrice::new(coefficient, every_secs, max_price);
-
-        let liquidator = Liquidator::new(
-            client.clone(),
-            gas_escalator,
-            hifi_flash_swap,
-            min_profit,
-            uniswap_v2_pair,
-        );
-
-        let vault_container = VaultContainer::new(balance_sheet, client.clone(), fy_tokens, multicall, vaults).await;
-
+        let vaults_container = VaultsContainer::new(balance_sheet, client.clone(), fy_tokens, multicall, vaults).await;
         Ok(Self {
             client,
             last_block,
             liquidator,
-            vault_container,
+            vaults_container,
         })
     }
 
@@ -87,16 +68,16 @@ impl<M: Middleware> Sentinel<M> {
             .map_err(ContractError::MiddlewareError)?;
 
         // 1. Check if our transactions have been mined.
-        self.liquidator.remove_pending_tx_or_bump_gas_price().await?;
+        self.liquidator.remove_pending_tx_tuple_or_bump_gas_price().await?;
 
         // 2. Update our dataset with the new block's data.
-        self.vault_container
+        self.vaults_container
             .update_vaults(self.client.clone(), self.last_block, block_number)
             .await?;
 
         // 3. Trigger the liquidation for any under-collateralized borrowers.
         self.liquidator
-            .trigger(gas_price, self.vault_container.get_vaults_iterator())
+            .trigger(gas_price, self.vaults_container.get_vaults_iterator())
             .await?;
 
         Ok(())
@@ -123,9 +104,9 @@ impl<M: Middleware> Sentinel<M> {
                 .await
                 .map_err(ContractError::MiddlewareError)?;
 
+            // On every 10th block we open a new file handler to dump the latest state.
+            // TODO: we should have a database connection instead here ...
             if block_number % 10 == U64::zero() {
-                // On every new block we open a new file handler to dump our new state.
-                // TODO: we should have a database connection instead here ...
                 log_file = Some(
                     OpenOptions::new()
                         .read(true)
@@ -162,7 +143,7 @@ impl<M: Middleware> Sentinel<M> {
             writable_file,
             &State {
                 last_block: self.last_block,
-                vaults: self.vault_container.vaults.clone(),
+                vaults: self.vaults_container.vaults.clone(),
             },
         )
         .unwrap();

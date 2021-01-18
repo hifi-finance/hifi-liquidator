@@ -1,7 +1,7 @@
 use anyhow::{Context, Result as AnyhowResult};
 use ethers::prelude::*;
 use gumdrop::Options;
-use hifi_liquidator::sentinel::Sentinel;
+use hifi_liquidator::{escalator, liquidations::Liquidator, sentinel::Sentinel};
 use hifi_liquidator_structs::{Config, Opts};
 use std::{convert::TryFrom, fs::OpenOptions, sync::Arc, time::Duration};
 use tracing::info;
@@ -34,12 +34,12 @@ async fn run<P: JsonRpcClient + 'static>(opts: Opts, provider: Provider<P>) -> A
         .with_context(|| format!("Could not read private key: {:?}", &opts.private_key))?
         .parse()
         .with_context(|| "Could not parse private key")?;
-    let address = wallet.address();
+    let liquidator_address = wallet.address();
     let signer_middleware = SignerMiddleware::new(provider, wallet);
-    let nonce_manager_middleware = NonceManagerMiddleware::new(signer_middleware, address);
+    let nonce_manager_middleware = NonceManagerMiddleware::new(signer_middleware, liquidator_address);
     let client = Arc::new(nonce_manager_middleware);
 
-    info!("Profits will be sent to {:?}", address);
+    info!("Profits will be sent to {:?}", liquidator_address);
     info!("Node: {}", opts.url);
     info!("Persistent data will be stored in: {:?}", opts.db_file);
 
@@ -58,15 +58,22 @@ async fn run<P: JsonRpcClient + 'static>(opts: Opts, provider: Provider<P>) -> A
         .unwrap();
     let state = serde_json::from_reader(&db_file).unwrap_or_default();
 
+    let gas_escalator = escalator::init_gas_escalator();
+    let liquidator = Liquidator::new(
+        client.clone(),
+        gas_escalator,
+        config.hifi_flash_swap,
+        liquidator_address,
+        opts.min_profit,
+        config.uniswap_v2_pair,
+    );
     let mut sentinel = Sentinel::new(
         config.balance_sheet,
         client,
         config.fy_tokens,
-        config.hifi_flash_swap,
+        liquidator,
         config.multicall,
-        opts.min_profit,
         state,
-        config.uniswap_v2_pair,
     )
     .await?;
 
