@@ -96,7 +96,7 @@ impl<M: Middleware> Sentinel<M> {
             .map_err(ContractError::MiddlewareError)?
             .stream();
 
-        let mut log_file: Option<File> = None;
+        let mut db_file: Option<File> = None;
         while on_block.next().await.is_some() {
             let block_number = self
                 .client
@@ -107,11 +107,11 @@ impl<M: Middleware> Sentinel<M> {
             // On every 10th block we open a new file handler to dump the latest state.
             // TODO: we should have a database connection instead here ...
             if block_number % 10 == U64::zero() {
-                log_file = Some(
+                db_file = Some(
                     OpenOptions::new()
-                        .read(true)
                         .write(true)
                         .create(true)
+                        .truncate(true)
                         .open(&log_file_name)
                         .unwrap(),
                 );
@@ -127,8 +127,8 @@ impl<M: Middleware> Sentinel<M> {
             self.last_block = block_number;
 
             // Log once every 10 blocks.
-            if let Some(log_file) = log_file.take() {
-                self.log_state(log_file);
+            if let Some(db_file) = db_file.take() {
+                self.log_state(db_file);
             }
         }
 
@@ -138,9 +138,9 @@ impl<M: Middleware> Sentinel<M> {
 
 /// Public methods for the Sentinel struct.
 impl<M: Middleware> Sentinel<M> {
-    fn log_state<W: Write>(&self, writable_file: W) {
+    fn log_state<W: Write>(&self, db_file: W) {
         serde_json::to_writer(
-            writable_file,
+            db_file,
             &State {
                 last_block: self.last_block,
                 vaults: self.vaults_container.vaults.clone(),
