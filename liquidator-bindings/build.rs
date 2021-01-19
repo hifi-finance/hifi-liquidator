@@ -6,7 +6,6 @@ fn main() {
     println!("cargo:rerun-if-changed=./abis/*.json");
 
     // bindgen("BalanceSheet");
-    // bindgen("Fintroller");
     // bindgen("FyToken");
     // bindgen("UniswapV2Pair");
 }
