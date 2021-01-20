@@ -73,9 +73,9 @@ impl<M: Middleware> Liquidator<M> {
 
         for (fy_token, borrower, vault) in vaults {
             // Only iterate over tuples that do not have pending liquidations.
-            if let Some(pending_tx) = self.get_pending_tx_tuple(fy_token, borrower) {
+            if let Some(pending_tx_tuple) = self.get_pending_tx_tuple(fy_token, borrower) {
                 trace!(
-                    pending_tx = ?pending_tx,
+                    pending_tx = %pending_tx_tuple.1,
                     fy_token = %fy_token,
                     borrower = %borrower,
                     "Liquidation tx not confirmed yet"
@@ -126,23 +126,15 @@ impl<M: Middleware> Liquidator<M> {
                     let pending_tx_request: TransactionRequest = contract_call.tx.clone();
                     let pending_tx_hash: TxHash = *pending_tx;
                     trace!(
+                        pending_tx_hash = %pending_tx_hash,
                         fy_token = %fy_token,
                         borrower = %borrower,
-                        pending_tx_hash = %pending_tx_hash,
-                        nonce = ?pending_tx_request.nonce,
                         "Submitted liquidation"
                     );
                     self.insert_pending_tx_tuple(*fy_token, *borrower, (pending_tx_request, pending_tx_hash, now));
                 }
                 Err(err) => {
-                    let err = err.to_string();
-                    if err.contains("ERR_INSUFFICIENT_PROFIT") {
-                        debug!("Liquidation not profitable.");
-                    } else if err.contains("ERR_INSUFFICIENT_LOCKED_COLLATERAL") {
-                        debug!("Collateral price has fallen so hard that not enough collateral can be clutched.");
-                    } else {
-                        error!("Tx error: {}", err);
-                    }
+                    self.handle_reverted_tx(err, "Tx reverted with error");
                 }
             };
         }
@@ -158,6 +150,19 @@ impl<M: Middleware> Liquidator<M> {
             inner_hash_map.get(borrower)
         } else {
             None
+        }
+    }
+
+    fn handle_reverted_tx(&self, err: ContractError<M>, description: &str) {
+        let err = err.to_string();
+        if err.contains("ERR_INSUFFICIENT_PROFIT") {
+            debug!("Liquidation not profitable.");
+        } else if err.contains("ERR_INSUFFICIENT_LOCKED_COLLATERAL") {
+            debug!("Collateral price has fallen so hard that not enough collateral can be clutched.");
+        } else if err.contains("UniswapV2: INSUFFICIENT_LIQUIDITY") {
+            debug!("Insufficient liquidity in Uniswap.");
+        } else {
+            error!("{}: {}", description, err);
         }
     }
 
@@ -194,11 +199,6 @@ impl<M: Middleware> Liquidator<M> {
         borrower: &Address,
         pending_tx_tuple: &PendingTransactionTuple,
     ) -> EthersResult<(), M> {
-        debug_assert!(
-            pending_tx_tuple.0.gas_price.is_some(),
-            "Gas price must be set in pending txs"
-        );
-
         let client = self.uniswap_v2_pair.client();
         let receipt = client
             .get_transaction_receipt(pending_tx_tuple.1)
@@ -223,11 +223,16 @@ impl<M: Middleware> Liquidator<M> {
                 "Confirmed"
             );
         } else {
-            // Get the new gas price based on how much time passed since the tx was last broadcast.
-            let new_gas_price = self.gas_escalator.get_gas_price(
-                pending_tx_tuple.0.gas_price.expect("Gas price must be set."),
-                now.duration_since(pending_tx_tuple.2).as_secs(),
-            );
+            // Calculate the new gas price based on how much time passed since the tx was broadcast.
+            let old_gas_price: U256 = pending_tx_tuple.0.gas_price.expect("Gas price must be set.");
+            let new_gas_price = self
+                .gas_escalator
+                .get_gas_price(old_gas_price, now.duration_since(pending_tx_tuple.2).as_secs());
+
+            // Stop here if the new gas price is not higher than the previous gas price.
+            if new_gas_price <= old_gas_price {
+                return Ok(());
+            }
 
             let replacement_tx_tuple = self
                 .pending_tx_tuples
@@ -240,7 +245,11 @@ impl<M: Middleware> Liquidator<M> {
             replacement_tx_tuple.0.gas_price = Some(new_gas_price);
 
             // Rebroadcast (TODO: Can we avoid cloning?).
-            match client.send_transaction(replacement_tx_tuple.0.clone(), None).await {
+            match client
+                .send_transaction(replacement_tx_tuple.0.clone(), None)
+                .await
+                .map_err(ContractError::MiddlewareError)
+            {
                 Ok(replacement_tx) => {
                     let replacement_tx_hash = *replacement_tx;
                     replacement_tx_tuple.1 = replacement_tx_hash;
@@ -252,14 +261,7 @@ impl<M: Middleware> Liquidator<M> {
                     );
                 }
                 Err(err) => {
-                    let err = err.to_string();
-                    if err.contains("ERR_INSUFFICIENT_PROFIT") {
-                        debug!("Liquidation not profitable.");
-                    } else if err.contains("ERR_INSUFFICIENT_LOCKED_COLLATERAL") {
-                        debug!("Collateral price has fallen so hard that not enough collateral can be clutched.");
-                    } else {
-                        error!("Replacement tx error: {}", err);
-                    }
+                    self.handle_reverted_tx(err, "Replacement tx reverted with error");
                 }
             }
         }
