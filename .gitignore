@@ -1,6 +1,6 @@
 # folders
+/cache
 /target
-/workspace
 
 # files
 private_key
