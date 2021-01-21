@@ -5,7 +5,7 @@
 use crate::EthersResult;
 
 use ethers::prelude::*;
-use hifi_liquidator_bindings::{BalanceSheet, FyToken, OpenVaultFilter};
+use hifi_liquidator_bindings::{BalanceSheet, OpenVaultFilter};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
 use tracing::{debug, debug_span};
@@ -99,20 +99,10 @@ impl<M: Middleware> VaultsContainer<M> {
     /// 1. getVaultDebt
     /// 2. isAccountUnderwater
     /// 3. getVaultLockedCollateral
-    /// 4. underlyingPrecisionScalar
-    pub async fn query_vault(
-        &mut self,
-        client: Arc<M>,
-        fy_token: Address,
-        borrower: Address,
-    ) -> EthersResult<Vault, M> {
+    pub async fn query_vault(&mut self, fy_token: Address, borrower: Address) -> EthersResult<Vault, M> {
         let debt_call = self.balance_sheet.get_vault_debt(fy_token, borrower);
         let is_account_underwater_call = self.balance_sheet.is_account_underwater(fy_token, borrower);
         let locked_collateral_call = self.balance_sheet.get_vault_locked_collateral(fy_token, borrower);
-
-        // TODO: cache these FyToken instances.
-        let fy_token = FyToken::new(fy_token, client);
-        let underlying_precision_scalar_call = fy_token.underlying_precision_scalar();
 
         // Batch the calls together.
         let multicall: &mut Multicall<M> = self
@@ -120,15 +110,15 @@ impl<M: Middleware> VaultsContainer<M> {
             .clear_calls()
             .add_call(debt_call)
             .add_call(is_account_underwater_call)
-            .add_call(locked_collateral_call)
-            .add_call(underlying_precision_scalar_call);
-        let (debt, is_account_underwater, locked_collateral, underlying_precision_scalar): (U256, bool, U256, U256) =
-            multicall.call().await?;
+            .add_call(locked_collateral_call);
+        let (debt, is_account_underwater, locked_collateral): (U256, bool, U256) = multicall.call().await?;
 
         // Scale the debt down by the underlying precision scalar. E.g. USDC has 6 decimals, so the debt is scaled
         // from 1e20 (100 fYUSDC) to 1e8 (100 USDC). There is a loss of precision when scaling down, but we can
         // safely neglect it.
-        let debt_in_underlying = debt / underlying_precision_scalar;
+        let usdc_precision_scalar =
+            U256::from_dec_str("1000000000000").expect("Creating U256 from decimal string must work");
+        let debt_in_underlying = debt / usdc_precision_scalar;
 
         Ok(Vault {
             debt,
@@ -140,11 +130,11 @@ impl<M: Middleware> VaultsContainer<M> {
 
     /// Indexes any new vaults which may have been opened since we last made this call. Then, it proceeds
     /// to get the latest account details for each user.
-    pub async fn update_vaults(&mut self, client: Arc<M>, from_block: U64, to_block: U64) -> EthersResult<(), M> {
+    pub async fn update_vaults(&mut self, from_block: U64, to_block: U64) -> EthersResult<(), M> {
         let span = debug_span!("Monitoring");
         let _enter = span.enter();
 
-        // 1. Get all new vaults (TODO: find a way to avoid having to do this).
+        // 1. Get all new vaults (TODO: find a way to query only the whitelisted fyTokens).
         let new_vault_tuples: Vec<OpenVaultFilter> = self
             .balance_sheet
             .open_vault_filter()
@@ -175,7 +165,7 @@ impl<M: Middleware> VaultsContainer<M> {
         // 4. Update all vaults.
         for (fy_token, inner_hash_map) in self.vaults.clone().iter() {
             for borrower in inner_hash_map.keys().into_iter() {
-                let vault = self.query_vault(client.clone(), *fy_token, *borrower).await?;
+                let vault = self.query_vault(*fy_token, *borrower).await?;
                 self.vaults
                     .get_mut(fy_token)
                     .expect("Inner hash map must exist since we're iterating over the map")

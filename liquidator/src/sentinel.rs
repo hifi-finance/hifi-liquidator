@@ -81,7 +81,7 @@ impl<M: Middleware> Sentinel<M> {
 
         // 2. Update our dataset with the new block's data.
         self.vaults_container
-            .update_vaults(self.client.clone(), self.last_block, block_number)
+            .update_vaults(self.last_block, block_number)
             .await?;
 
         // 3. Trigger the liquidation for any under-collateralized borrowers.
