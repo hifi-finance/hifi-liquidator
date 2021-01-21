@@ -12,6 +12,7 @@ use std::{
     io::Write,
     path::PathBuf,
     sync::Arc,
+    time::Instant,
 };
 use tracing::debug_span;
 
@@ -60,7 +61,8 @@ impl<M: Middleware> Sentinel<M> {
 
     /// Runs the liquidation business logic for the specified block.
     async fn on_block(&mut self, block_number: U64) -> EthersResult<(), M> {
-        // Get the gas price - TODO: Replace with gas price oracle
+        // Get the gas price.
+        // TODO: Replace with gas price oracle.
         let gas_price = self
             .client
             .get_gas_price()
@@ -68,7 +70,14 @@ impl<M: Middleware> Sentinel<M> {
             .map_err(ContractError::MiddlewareError)?;
 
         // 1. Check if our transactions have been mined.
-        self.liquidator.remove_pending_tx_tuple_or_bump_gas_price().await?;
+        let now = Instant::now();
+        for (fy_token, inner_hash_map) in self.liquidator.pending_tx_tuples.clone().into_iter() {
+            for (borrower, pending_tx_tuple) in inner_hash_map {
+                self.liquidator
+                    .remove_or_replace_tx(now, &fy_token, &borrower, &pending_tx_tuple)
+                    .await?;
+            }
+        }
 
         // 2. Update our dataset with the new block's data.
         self.vaults_container

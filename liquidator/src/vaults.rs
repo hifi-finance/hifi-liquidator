@@ -74,6 +74,14 @@ impl<M: Middleware> VaultsContainer<M> {
         }
     }
 
+    pub fn get_vault(&self, fy_token: &Address, borrower: &Address) -> Option<&Vault> {
+        if let Some(inner_hash_map) = self.vaults.get(fy_token) {
+            inner_hash_map.get(borrower)
+        } else {
+            None
+        }
+    }
+
     pub fn get_vaults_iterator(&self) -> impl Iterator<Item = (&Address, &Address, &Vault)> {
         let mut vaults_iterator: Vec<(&Address, &Address, &Vault)> = vec![];
 
@@ -92,7 +100,12 @@ impl<M: Middleware> VaultsContainer<M> {
     /// 2. isAccountUnderwater
     /// 3. getVaultLockedCollateral
     /// 4. underlyingPrecisionScalar
-    pub async fn get_vault(&mut self, client: Arc<M>, fy_token: Address, borrower: Address) -> EthersResult<Vault, M> {
+    pub async fn query_vault(
+        &mut self,
+        client: Arc<M>,
+        fy_token: Address,
+        borrower: Address,
+    ) -> EthersResult<Vault, M> {
         let debt_call = self.balance_sheet.get_vault_debt(fy_token, borrower);
         let is_account_underwater_call = self.balance_sheet.is_account_underwater(fy_token, borrower);
         let locked_collateral_call = self.balance_sheet.get_vault_locked_collateral(fy_token, borrower);
@@ -162,10 +175,10 @@ impl<M: Middleware> VaultsContainer<M> {
         // 4. Update all vaults.
         for (fy_token, inner_hash_map) in self.vaults.clone().iter() {
             for borrower in inner_hash_map.keys().into_iter() {
-                let vault = self.get_vault(client.clone(), *fy_token, *borrower).await?;
+                let vault = self.query_vault(client.clone(), *fy_token, *borrower).await?;
                 self.vaults
                     .get_mut(fy_token)
-                    .expect("Inner hash map will always be found since we're iterating over the map")
+                    .expect("Inner hash map must exist since we're iterating over the map")
                     .insert(*borrower, vault);
             }
         }
