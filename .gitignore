@@ -1,6 +1,6 @@
 # folders
-/cache
 /target
 
 # files
+cache/db.json
 private_key

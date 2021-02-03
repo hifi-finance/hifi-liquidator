@@ -19,9 +19,6 @@ pub struct Opts {
     #[options(help = "Minimum desired profit per liquidation", default = "0")]
     pub min_profit: U256,
 
-    #[options(help = "Path to your private key")]
-    pub private_key: PathBuf,
-
     #[options(help = "Block at which to begin monitoring")]
     pub start_block: Option<U64>,
 

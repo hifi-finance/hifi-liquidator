@@ -3,7 +3,7 @@ use ethers::prelude::*;
 use gumdrop::Options;
 use hifi_liquidator::{escalator, liquidations::Liquidator, sentinel::Sentinel};
 use hifi_liquidator_structs::{Config, Opts};
-use std::{convert::TryFrom, fs::OpenOptions, sync::Arc, time::Duration};
+use std::{convert::TryFrom, env, fs::OpenOptions, sync::Arc, time::Duration};
 use tracing::info;
 use tracing_subscriber::{filter::EnvFilter, fmt::Subscriber};
 
@@ -30,8 +30,8 @@ async fn main() -> AnyhowResult<()> {
 async fn run<P: JsonRpcClient + 'static>(opts: Opts, provider: Provider<P>) -> AnyhowResult<()> {
     info!("Starting Hifi liquidator");
     let provider = provider.interval(Duration::from_millis(opts.interval));
-    let wallet: LocalWallet = std::fs::read_to_string(&opts.private_key)
-        .with_context(|| format!("Could not read private key: {:?}", &opts.private_key))?
+    let wallet: LocalWallet = env::var("PRIVATE_KEY")
+        .with_context(|| "Could not interpret PRIVATE_KEY env variable")?
         .parse()
         .with_context(|| "Could not parse private key")?;
     let liquidator_address = wallet.address();

@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hifi-liquidator-deployment
+  labels:
+    app: hifi-liquidator
+spec:
+  replicas: 3
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: hifi-liquidator
+  template:
+    metadata:
+      labels:
+        app: hifi-liquidator
+    spec:
+      containers:
+        - name: hifi-liquidator
+          args:
+            - "--config"
+            - "./config.json"
+            - "--db-file"
+            - "./db.json"
+            - "--interval"
+            - "15000"
+            - "--min-profit"
+            - "100"
+            - "--url"
+            - "$(NODE_URL)"
+          env:
+            - name: NODE_URL
+              valueFrom:
+                secretKeyRef:
+                  key: node_url
+                  name: config
+            - name: PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  key: private_key
+                  name: config
+          image: us-east1-docker.pkg.dev/hifi-development/hifi-liquidator/hifi-liquidator:1.0.0
+          resources:
+            limits:
+              cpu: "0.5"
+              memory: 512Mi
+            requests:
+              cpu: "0.25"
+              memory: 256Mi
