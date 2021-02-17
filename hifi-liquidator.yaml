@@ -39,7 +39,7 @@ spec:
                 secretKeyRef:
                   key: private_key
                   name: config
-          image: us-east1-docker.pkg.dev/hifi-development/hifi-liquidator/hifi-liquidator:1.0.0
+          image: us-east1-docker.pkg.dev/hifi-liquidator/hifi-liquidator-repo/hifi-liquidator:1.0.0
           resources:
             limits:
               cpu: "0.5"
