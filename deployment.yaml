@@ -5,8 +5,8 @@ metadata:
   labels:
     app: hifi-liquidator
 spec:
-  replicas: 3
-  revisionHistoryLimit: 3
+  replicas: 1
+  revisionHistoryLimit: 1
   selector:
     matchLabels:
       app: hifi-liquidator
